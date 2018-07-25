@@ -1,0 +1,376 @@
+---
+title: 'Cleaned up notes: Detecting positive selection in the amniote c-mos gene'
+author: "David Cerny"
+date: "8/30/2017"
+output: html_document
+editor_options: 
+  chunk_output_type: inline
+---
+
+RAxML tree estimation:
+
+```
+standard-RAxML/raxmlHPC-PTHREADS-SSE3 -p 3375 -s sate_cmos_917_taxa.fasta -f d -n constrained_917 -g constraint_917_taxa.tre -m GTRCAT -T 16 -N 20
+standard-RAxML/raxmlHPC-PTHREADS-SSE3 -p 5909 -s sate_cmos_904_taxa.fasta -f d -n constrained_904 -g constraint_904_taxa.tre -m GTRCAT -T 16 -N 20
+```
+  
+Alignment clean-up for `codeml`
+
+```{r, eval = FALSE}
+a <- read.table("/Users/David/Documents/Extracurricular/2016-17/CRG_Summer_Internship/Research/vert_cmos/sate_cmos_904_taxa.fasta", stringsAsFactors = FALSE)
+dim(a)
+a[,2] <- gsub("N", "-", a[,2])
+write.table(a, "/Users/David/Documents/Extracurricular/2016-17/CRG_Summer_Internship/Research/vert_cmos/sate_904_forcodeml.fasta", col.names = F, row.names = F, quote = F)
+
+b <- read.table("/Users/David/Documents/Extracurricular/2016-17/CRG_Summer_Internship/Research/vert_cmos/sate_904_forcodeml.fasta", stringsAsFactors = FALSE)
+dim(b)
+b[,1] <- paste(">", b[,1], sep = "")
+write.table(b, "/Users/David/Documents/Extracurricular/2016-17/CRG_Summer_Internship/Research/vert_cmos/sate_904_forcodeml.fasta", col.names = F, row.names = F, quote = F)
+```
+
+```
+gsed -i 's/ /\n/g' sate_904_forcodeml.fasta
+```
+
+`codeml` run:
+
+```
+/nfs/users2/fk/dcerny/paml4.9e/bin/codeml cmos_904_codeml.ctl
+```
+
+Extract the `codeml` tree. Note that there are two trees we need: one with branch lengths in terms of substitutions per codon (in the output file), and another one with node labels (in `rst`). We need to create a new tree that has both.
+
+```
+gsed -i 's/ //g' codeml_tree_node_labels.tre
+```
+
+```{r}
+library(ape)
+# Tree w/ branch lengths in substitutions per codon, numbered tips:
+codemltree <- read.tree("/Users/David/Grive/CRG_Research/vert_cmos/codeml_tree_subst-per-codon-brlen_numbered-tips.tre")
+# Tree w/ branch lengths in substitutions per codon, named tips:
+namedtree <- read.tree("/Users/David/Grive/CRG_Research/vert_cmos/codeml_tree_subst-per-codon-brlen_named-tips.tre")
+# Tree w/ node labels
+nodelabeltree <- read.tree("/Users/David/Grive/CRG_Research/vert_cmos/codeml_tree_node_labels.tre")
+# Re-order both by post-order traversal. This is to make sure that when you transplant
+# the node labels from one to the other, they will be assigned to the right nodes.
+codemltree <- reorder(codemltree, order = "postorder")
+namedtree <- reorder(namedtree, order = "postorder")
+nodelabeltree <- reorder(nodelabeltree, order = "postorder")
+# Add node label to the tree with branch lengths
+codemltree$node.label <- nodelabeltree$node.label
+namedtree$node.label <- nodelabeltree$node.label
+# write.tree(namedtree, "/Users/David/Grive/CRG_Research/vert_cmos/named_tree_brlen_node_labels.tre")
+```
+
+Extract the nucleotide sequences for both tips and ancestral nodes from the output file.
+
+```{r}
+# Read in the rst file. Replace all instances of two or more consecutive spaces with tabs.
+# Remove the "node #" string that precedes each node number
+rst <- readLines("/Users/David/Grive/CRG_Research/vert_cmos/rst")
+rst <- gsub("[ ]{2,}", "\t", rst, perl = TRUE)
+rst <- gsub("node #", "", rst)
+rst <- gsub("Node #", "", rst)
+
+# Read in the table from 'rst' (the variable created above, not the file). Go three lines
+# below the occurrence of the string 'List of extant and reconstructed sequences', and read
+# in as many lines as there are tips and nodes in codemltree:
+nuclseq_all <- read.table(text = rst, skip = grep("List of extant and reconstructed sequences", rst) + 3, nrows = length(codemltree$tip.label) + length(codemltree$node.label), header = FALSE, stringsAsFactors = FALSE, sep = "\t")
+
+# We need to convert the tip labels to numbers rather than full names. Since the sequences
+# in the rst file are in the same order as tips in the tree, we can simply write:
+nuclseq_all[1:904,1] <- 1:904
+```
+
+Note: the `ggtree` package provides an alternative way of reading in the `rst` file:
+
+```{r, comment='', message=F, warning=F}
+# source("https://bioconductor.org/biocLite.R")
+# biocLite("ggtree")
+library(ggtree)
+rst2 <- read.paml_rst("/Users/David/Grive/CRG_Research/vert_cmos/rst")
+
+# Note: to visualize the tree with substitutions, uncomment the code below:
+# p <- ggtree::ggtree(rst2) +
+#      geom_text(aes(x=branch, label=marginal_AA_subs), vjust=-.5, color='steelblue') +
+#      ggtree::geom_text2(aes(subset=!isTip, label=node), hjust=-.3) +
+#      ggtree::theme_tree2() +
+#      ggtree::geom_tiplab()
+# print(p)
+
+# How many substitutions do we have?
+subs_per_site <- vector()
+for(i in 1:length(rst2@marginal_AA_subs$subs)) {
+  if (nchar(rst2@marginal_AA_subs$subs[i]) == 0) {
+    next
+  } else {
+    split_by_newline <- strsplit(rst2@marginal_AA_subs$subs[i], '\n')[[1]]
+    join_with_slash <- paste(split_by_newline[1], "/", split_by_newline[2], sep = "")
+    subs_per_site <- c(subs_per_site, length(strsplit(join_with_slash, " / ")[[1]]))
+  }
+}
+sum(subs_per_site)
+
+# Reality check: what is the average branch length in our tree in terms of nonsynonymous
+# substitutions per codon?
+sum(subs_per_site)/((2*length(namedtree$tip.label) - 3)*(nchar(rst2@tip_seq[[1]][1])/3))
+```
+
+What are the locations, parent states, and descendant states of these substitutions? It's not immediately obvious how the location of a substitution is stored in the S4 object generated by `read.paml_rst()`, but this can be determined by comparing it against the original rst file. The comparison shows that `rst2@marginal_AA_subs$label` lists the end node of the branch along which the substitution in question took place (i.e., the descendant), with the start node of that branch (ancestor) being located immediately rootward.
+
+```{r}
+subs_from_ggtree <- c("Descendant_node", "Parent_state", "Site", "Descendant_state")
+for(i in 1:nrow(rst2@marginal_AA_subs)) {
+  if (nchar(rst2@marginal_AA_subs$subs[i]) == 0) {
+    next
+  } else {
+    child <- rst2@marginal_AA_subs$label[i]
+    split_by_newline <- strsplit(rst2@marginal_AA_subs$subs[i], '\n')[[1]]
+    if (length(split_by_newline) == 1) {
+      split_by_slash <- strsplit(split_by_newline, ' / ')[[1]]
+      sub_matrix <- matrix(NA, nrow = length(split_by_slash), ncol = 3)
+      for(i in 1:length(split_by_slash)) {
+        sub_matrix[i,] <- strsplit(gsub("([A-Z]*)([0-9]*)([A-Z]*)", "\\1 \\2 \\3", split_by_slash[i]), " ")[[1]]
+      }
+      sub_matrix <- cbind(rep(child, length(split_by_slash)), sub_matrix)
+      subs_from_ggtree <- rbind(subs_from_ggtree, sub_matrix)
+    } else {
+      join_with_slash <- paste(split_by_newline[1], "/", split_by_newline[2], sep = "")
+      split_by_slash <- strsplit(join_with_slash, ' / ')[[1]] 
+      sub_matrix <- matrix(NA, nrow = length(split_by_slash), ncol = 3)
+      for(i in 1:length(split_by_slash)) {
+        sub_matrix[i,] <- strsplit(gsub("([A-Z]*)([0-9]*)([A-Z]*)", "\\1 \\2 \\3", split_by_slash[i]), " ")[[1]]
+      }
+      sub_matrix <- cbind(rep(child, length(split_by_slash)), sub_matrix)
+      subs_from_ggtree <- rbind(subs_from_ggtree, sub_matrix)
+    }
+  }
+}
+
+subs_from_ggtree <- as.data.frame(subs_from_ggtree, stringsAsFactors = FALSE)
+colnames(subs_from_ggtree) <- subs_from_ggtree[1,]
+subs_from_ggtree <- subs_from_ggtree[-1,]
+
+# Did we get all the substitutions?
+nrow(subs_from_ggtree) == sum(subs_per_site)
+
+# Add the Parent_node to each substitution:
+ancestor_nodes <- vector()
+for(i in 1:nrow(subs_from_ggtree)) {
+  if (subs_from_ggtree$Descendant_node[i] %in% namedtree$tip.label) {
+    ancestor_nodes <- c(ancestor_nodes, phangorn::Ancestors(namedtree, match(subs_from_ggtree$Descendant_node[i], namedtree$tip), type = "parent"))
+  } else {
+    ancestor_nodes <- c(ancestor_nodes, phangorn::Ancestors(namedtree, as.numeric(subs_from_ggtree$Descendant_node[i]), type = "parent"))
+  }
+}
+
+subs_from_ggtree <- cbind(ancestor_nodes, subs_from_ggtree)
+colnames(subs_from_ggtree)[1] <- "Parent_node"
+subs_from_ggtree$Site <- as.numeric(subs_from_ggtree$Site)
+```
+
+How many substitutions occurred down the tree from the substitution in question?
+
+```{r}
+# We can make use of the fact that all our substitutions are already in the data frame:
+for(i in 1:nrow(subs_from_ggtree)) {
+  # If the 'Descendant_node' is external (i.e., if it is a tip), there can be no
+  # substitutions further down the tree, because codeml does not account for multiple hits.
+  # We will test for this possibility using the fact that only tips will match against the
+  # vector of tip names without producing NAs:
+  if (!is.na(match(subs_from_ggtree$Descendant_node[i], namedtree$tip))) {
+    subs_from_ggtree[i,6] <- 0
+  # If the 'Descendant_node' is internal, get a list of all its descendants and look them
+  # up in the 'Parent_node' column:
+  } else {
+    site <- subs_from_ggtree$Site[i]
+    int_desc <- phangorn::Descendants(namedtree, as.numeric(subs_from_ggtree$Descendant_node[i]), type = "all")
+    subs_from_ggtree[i,6] <- nrow(subs_from_ggtree[subs_from_ggtree$Site == site & subs_from_ggtree$Parent_node %in% int_desc,])
+  }
+}
+
+colnames(subs_from_ggtree)[6] <- "Tipward_subs"
+```
+
+We can extend this code to calculate the number of independent losses taking place down the tree. First, we will define a function that will extract those substitutions that happened
+immediately after the substitution of interest (i.e., at a given site, there are no other substitutions along the path connecting their locations in the tree):
+
+```{r}
+immediately_below <- function(frame) {
+  # For each 'Descendant_node' in sub_frame, create a vector that enumerates
+  # all its ancestors and whose first element is the 'Descendant_node' itself:
+  pathstorer <- list()
+  for(j in 1:nrow(frame)) {
+    # If the 'Descendant_node' is external:
+    if (!is.na(match(frame$Descendant_node[j], namedtree$tip))) {
+      ancseq <- phangorn::Ancestors(namedtree, match(frame$Descendant_node[j], namedtree$tip))
+      pathstorer[[j]] <- c(match(frame$Descendant_node[j], namedtree$tip), ancseq)
+    # If the 'Descendant_node' is internal:
+    } else {
+      ancseq <- phangorn::Ancestors(namedtree, as.numeric(frame$Descendant_node[j]))
+      pathstorer[[j]] <- c(as.numeric(frame$Descendant_node[j]), ancseq)
+    }
+  }
+  # To exclude reversals, make sure that none of the resulting series of ancestors
+  # is a superset of another species of ancestors:
+  out <- sapply(pathstorer, function(x) { # Credit: Tim Biegeleisen, Stack Overflow
+    res <- lapply(pathstorer, function(y) {
+      return(sum(!(y %in% x)))
+    })
+    return(sum(res > 0) == length(res) - 1)
+  })
+  # Keep only those rows of sub_frame for which this is true:
+  include_or_not <- pathstorer %in% pathstorer[out]
+  new_frame <- frame[include_or_not,]
+  return(new_frame)
+}
+```
+
+For each substitution, tally the independent losses of the end state:
+
+```{r}
+for(i in 1:nrow(subs_from_ggtree)) {
+  if (!is.na(match(subs_from_ggtree$Descendant_node[i], namedtree$tip))) {
+    subs_from_ggtree[i,7] <- 0
+  } else {
+    site <- subs_from_ggtree$Site[i]
+    int_desc <- phangorn::Descendants(namedtree, as.numeric(subs_from_ggtree$Descendant_node[i]), type = "all")
+    sub_frame <- subs_from_ggtree[subs_from_ggtree$Site == site & subs_from_ggtree$Parent_node %in% int_desc,]
+    if (nrow(sub_frame) == 0) {
+      subs_from_ggtree[i,7] <- 0
+    } else {
+      subs_from_ggtree[i,7] <- nrow(immediately_below(sub_frame))
+    }
+  }
+}
+colnames(subs_from_ggtree)[7] <- "Independent_losses"
+
+# Sanity check: you can't have more independent losses than you have tipward substitutions:
+subs_from_ggtree[subs_from_ggtree$Tipward_subs < subs_from_ggtree$Independent_losses,]
+```
+
+Extending this further, we can tally the reversals occurring down the tree from the substitution of interest. For a substitution of the form $A \rightarrow B$, we define reversals as those independent losses of $B$ which resulted in regaining $A$.
+
+```{r}
+for(i in 1:nrow(subs_from_ggtree)) {
+  if (!is.na(match(subs_from_ggtree$Descendant_node[i], namedtree$tip))) {
+    subs_from_ggtree[i,8] <- 0
+  } else {
+    site <- subs_from_ggtree$Site[i]
+    parentstate <- subs_from_ggtree$Parent_state[i]
+    int_desc <- phangorn::Descendants(namedtree, as.numeric(subs_from_ggtree$Descendant_node[i]), type = "all")
+    sub_frame <- subs_from_ggtree[subs_from_ggtree$Site == site & subs_from_ggtree$Parent_node %in% int_desc,]
+    if (nrow(sub_frame) == 0) {
+      subs_from_ggtree[i,8] <- 0
+    } else {
+      new_frame <- immediately_below(sub_frame)
+      subs_from_ggtree[i,8] <- nrow(new_frame[new_frame$Descendant_state == parentstate,])
+    }
+  }
+}
+colnames(subs_from_ggtree)[8] <- "Reversals"
+
+# Sanity check: you can't have more reversals than you have independent losses:
+subs_from_ggtree[subs_from_ggtree$Independent_losses < subs_from_ggtree$Reversals,]
+```
+
+Calculate the longevity of the end state of each substitution.
+
+```{r}
+library(geiger)
+for(i in 1:nrow(subs_from_ggtree)) {
+  # Let's assume each substitution takes place halfway between the 'Parent_node' and 
+  # the 'Descendant_node'. If the 'Descendant_node' is external, we are done:
+  if (!is.na(match(subs_from_ggtree$Descendant_node[i], namedtree$tip))) {
+    subs_from_ggtree[i,9] <- 0.5*dist.nodes(namedtree)[subs_from_ggtree$Parent_node[i], match(subs_from_ggtree$Descendant_node[i], namedtree$tip)]
+  } else {
+    dist1 <- 0.5*dist.nodes(namedtree)[subs_from_ggtree$Parent_node[i], subs_from_ggtree$Descendant_node[i]]
+    # If the 'Descendant_node' is internal, let's calculate the length of the subtree
+    # for which it is the root. First, delineate this subtree by enumerating its tips:
+    tip_set <- tips(namedtree, as.numeric(subs_from_ggtree$Descendant_node[i]))
+    # Identify all branches in the clade specified by the set of tips found above:
+    branchlist <- which.edge(namedtree, tip_set)
+    # Sum the lengths of these branches:
+    dist2 <- sum(namedtree$edge.length[branchlist])
+    # If there are no substitutions further down the tree, we are done:
+    if (subs_from_ggtree$Tipward_subs[i] == 0) {
+      subs_from_ggtree[i,9] <- dist1 + dist2
+    } else {
+      # Look up the descendants of the 'Descendant_node' in the 'Parent_node' column:
+      int_desc <- phangorn::Descendants(namedtree, as.numeric(subs_from_ggtree$Descendant_node[i]), type = "all")
+      # Make a new data frame out of those rows of subs_from_ggtree whose 'Parent_node'
+      # is located down the tree from the 'Descendant_node' of the focal substitution:
+      sub_frame <- subs_from_ggtree[subs_from_ggtree$Site == subs_from_ggtree$Site[i] & subs_from_ggtree$Parent_node %in% int_desc,]
+      new_frame <- immediately_below(sub_frame)
+      to_subtract <- vector()
+      for(k in 1:nrow(new_frame)) {
+        # If the 'Descendant_node' is external, it does not give rise to any subtree.
+        # Thus, the only value we have to subtract from (dist1 + dist2) is half the
+        # distance between the 'Parent_node' and the 'Descendant_node':
+        if (!is.na(match(new_frame$Descendant_node[k], namedtree$tip))) {
+          to_subtract <- c(to_subtract, 0.5*dist.nodes(namedtree)[new_frame$Parent_node[k], match(new_frame$Descendant_node[k], namedtree$tip)])
+        # On the other hand, if the 'Descendant_node' is internal, we also have to subtract
+        # the full length of the subtree originating from this node:
+        } else {
+          tip_set2 <- tips(namedtree, as.numeric(new_frame$Descendant_node[k]))
+          branchlist2 <- which.edge(namedtree, tip_set2)
+          to_subtract <- c(to_subtract, 0.5*dist.nodes(namedtree)[new_frame$Parent_node[k], as.numeric(new_frame$Descendant_node[k])], sum(namedtree$edge.length[branchlist2]))
+        }
+      }
+      subs_from_ggtree[i,9] <- dist1 + dist2 - sum(to_subtract)
+    } 
+  }
+}
+colnames(subs_from_ggtree)[9] <- "Longevity"
+
+# Sanity checks
+# No end state can have a longevity greater than the total length of the tree:
+max(subs_from_ggtree$Longevity) < sum(namedtree$edge.length)
+# No end state can have a negative longevity:
+which(subs_from_ggtree$Longevity < 0)
+
+# Print to file:
+# write.table(subs_from_ggtree, "/Users/David/Grive/CRG_Research/vert_cmos/nonsyn_subs.txt", row.names = FALSE, quote = FALSE, sep = "\t")
+```
+
+Let's see if this works. We want a complex enough scenario (i.e., multiple substitutions down the tree) that still involves a subtree of manageable size. Find a suitable test case using the following sorting:
+
+```{r, eval = FALSE}
+subs_from_ggtree[order(-subs_from_ggtree$Tipward_subs),]
+```
+```{r}
+subs_from_ggtree[2107,]
+```
+
+seems promising. Using the tree plotted with ggtree (which has substitutions shown above branches and labeled internal nodes), we can see that the descendant state "I" was lost twice: between nodes 1587 and 1588 and between nodes 1590 and 1591. Once again, we will assume that the state originated and was lost in the middle of the respective branches. The branch lengths were (1) read off a FigTree visualization of the tree and (2) calculated using the `dist.nodes()` function.
+
+```{r, echo = FALSE}
+branch_start <- c(1568, 1569, 1569, 1570, 1570, 1571, 1571, 1572, 1572, 1573, 1573, 1574, 1574, 1575, 1575, 1576, 1576, 1577, 1577, 1578, 1578, 1579, 1579, 1580, 1580, 1581, 1581, 1582, 1582, 1583, 1583, 1584, 1584, 1585, 1585, 1586, 1586, 1587, 1587, 1589, 1589, 1590, 1590, 1670, 1670, 1671, 1671, 1672, 1672, 1673, 1673, 1674, 1674, 1675, 1675, 1676, 1676, 1677, 1677, 1678, 1678, 1679, 1679, 1680, 1680, 1681, 1681, 1682, 1682, 1683, 1683, 1684, 1684, 1685, 1685, 1686, 1686)
+branch_end <- c("1569", "1570", "1574", "1571", "1573", "GQ505118.1_Calyptorhynchus", "1572", "GQ505119.1_Calyptorhynchus", "HQ316818.1_Calyptorhynchus", "GQ505120.1_Cacatua", "GQ505121.1_Cacatua", "1575", "1586", "1576", "1584", "1577", "1582", "GQ505117.1_Triclaria", "1578", "JF807960.1_Pionus", "1579", "KJ817819.1_Amazona", "1580", "JF807953.1_Amazona", "1581", "JF807952.1_Amazona", "JF807954.1_Amazona", "JF807956.1_Deroptyus", "1583", "JF807951.1_Ara", "JF807957.1_Guaruba", "GQ505115.1_Psittacus", "1585", "GQ505116.1_Poicephalus", "JF807961.1_Poicephalus", "1587", "1589", "GQ505127.1_Psittrichas", "1588", "1590", "1670", "JX442404.1_Psephotus", "1591", "1671", "1677", "GQ505093.1_Polytelis", "1672", "1673", "1675", "GQ505090.1_Alisterus", "1674", "GQ505091.1_Alisterus", "HQ316816.1_Alisterus", "GQ505094.1_Polytelis", "1676", "GQ505092.1_Aprosmictus", "HQ316817.1_Aprosmictus", "1678", "1686", "1679", "1682", "GQ505133.1_Prioniturus", "1680", "JF807962.1_Prioniturus", "1681", "GQ505134.1_Prioniturus", "HQ316827.1_Prioniturus", "HQ316820.1_Geoffroyus", "1683", "GQ505135.1_Eclectus", "1684", "U88424.1_Psittacula", "1685", "GQ505136.1_Tanygnathus",  "GQ505137.1_Psittacula", "GQ505128.1_Micropsitta", "GQ505129.1_Micropsitta")
+length_FigTree <- c(0.025518, 0.026074, 0.005585, 0.028184, 0.025199, 0, 0.005536, 0, 0, 0.011207, 0.005519, 0.036214, 0, 0.010538, 0.039708, 0.006697, 0.021490, 0.028377, 0.011113, 0.005581, 0, 0.011154, 0.011154, 0, 0.005563, 0, 0, 0.028190, 0, 0, 0.011115, 0.011130, 0.011042, 0.011470, 0.016892, 0.022380, 0, 0.022452, 0.016811, 0.016671, 0, 0, 0.005525, 0.005619, 0, 0.028269, 0.005527, 0.011198, 0.005553, 0.005575, 0, 0, 0, 0.005630, 0.016875, 0, 0, 0.011162, 0.033703, 0.027150, 0.011185, 0, 0, 0, 0.006662, 0, 0, 0.005578, 0.005540, 0.016782, 0.011132, 0.039592, 0, 0.005529, 0.011347, 0.016622, 0)
+test_frame <- data.frame(cbind(branch_start, branch_end, length_FigTree), stringsAsFactors = FALSE)
+for(i in 1:nrow(test_frame)) {
+  if (!is.na(match(test_frame$branch_end[i], namedtree$tip))) {
+    test_frame[i,4] <- dist.nodes(namedtree)[test_frame$branch_start[i], match(test_frame$branch_end[i], namedtree$tip)]
+  } else {
+    test_frame[i,4] <- dist.nodes(namedtree)[test_frame$branch_start[i], as.numeric(test_frame$branch_end[i])]
+  }
+}
+coefficient <- c(0.5, rep(1, 37), 0.5, rep(1, 3), 0.5, rep(1, 34))
+test_frame[,5] <- coefficient
+test_frame[,6] <- as.numeric(test_frame[,3])*test_frame[,5]
+test_frame[,7] <- as.numeric(test_frame[,4])*test_frame[,5]
+test_frame[,8] <- c("Origin", rep("", 37), "Loss 1", rep("", 3), "Loss 2", rep("", 34))
+colnames(test_frame)[c(4,5,6,7,8)] <- c("length_dist.nodes", "coefficient", "eff_length_FigTree", "eff_length_dist.nodes", "notes")
+```
+
+```{r}
+library(knitr)
+library(kableExtra)
+test_frame[,-5] %>%
+  kable("html") %>%
+  kable_styling()
+sum(as.numeric(test_frame$eff_length_FigTree)) == subs_from_ggtree$Longevity[2107]
+sum(as.numeric(test_frame$eff_length_dist.nodes)) == subs_from_ggtree$Longevity[2107]
+```
